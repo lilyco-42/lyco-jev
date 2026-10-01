@@ -216,3 +216,39 @@ jobs:
           name: app-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # ---- on-device (emulator) half of the suite ---------------------------
+      # ML Kit OCR, the ONNX detector and the ONNX sentence encoder need nothing
+      # beyond the 43 MB assets already fetched, so they run on a stock emulator.
+      # LocalJudgeInstrumentedTest is deliberately NOT listed: it needs the
+      # 0.53 GB GGUF, which stays out of git. Run it locally after
+      #   adb push Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf /data/local/tmp/
+      # KVM enablement + action usage copied from ReactiveCircus/
+      # android-emulator-runner's own README example.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run instrumented tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: >-
+            ./gradlew :app:connectedDebugAndroidTest
+            -Pandroid.testInstrumentationRunnerArguments.class=com.jev.probe.capture.vision.VisionInstrumentedTest,com.jev.probe.core.kb.MemoryInstrumentedTest,com.jev.probe.capture.ocr.OcrInstrumentedTest
+            --console=plain
+
+      - name: Upload instrumented test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumented-test-reports
+          path: '**/build/reports/androidTests/'
+          if-no-files-found: warn
