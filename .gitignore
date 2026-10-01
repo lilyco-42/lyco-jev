@@ -1,0 +1,48 @@
+# Build
+/build/
+/app/build/
+# CMake/NDK native artifacts (llama.cpp) - ~800 MB, rebuilt by CI
+/app/.cxx/
+.gradle/
+
+# Model weights: ~43 MB, fetched by .github/workflows/android.yml when missing.
+# Keep them out of git so the repo stays a few MB; the 0.53 GB GGUF is never
+# committed either - LocalJevModel downloads it on first use.
+/app/src/main/assets/models/
+*.apk
+*.ap_
+*.dex
+*.class
+local.properties
+
+# Machine-specific
+env.ps1
+gradle.properties.local
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Dev artifacts / reports (not part of the product)
+/_reports/
+/tools/jev/report/
+/tools/jev/__pycache__/
+**/__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Never commit secrets
+*.key
+secrets.*
+
+# Prebuilt APK for direct install (tracked on purpose)
+!/apk/*.apk
+
+# Signing material never enters the repo
+*.jks
+*.keystore
+keystore.properties

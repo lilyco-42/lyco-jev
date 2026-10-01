@@ -1,0 +1,194 @@
+# Android CI for lyco-jev.
+#
+# Structure copied from android/nowinandroid's Build.yaml (checkout -> setup-java ->
+# setup-gradle -> upload-artifact), trimmed to what this project actually needs,
+# plus two things the reference does not have to deal with:
+#
+#   1. an NDK/CMake native build: app/src/main/cpp compiles llama.cpp, which is
+#      pulled at a pinned commit by CMake FetchContent, and
+#      app/build.gradle.kts pins ndkVersion 30.0.15729638 / CMake 3.22.1;
+#   2. model assets that are NOT committed (23 MB encoder + 20 MB detector), so
+#      they are fetched here - and skipped when someone does commit them.
+#
+# The 0.53 GB GGUF is deliberately absent: LocalJevModel downloads it on first
+# use, so it never needs to be in CI or in the APK.
+name: Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Unit tests and debug APK
+    runs-on: ubuntu-latest
+    # The llama.cpp build is the long pole; it is built for two ABIs in debug.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install platform, NDK and CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" \
+                     "ndk;30.0.15729638" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/30.0.15729638" >> "$GITHUB_ENV"
+
+      - name: Fetch model assets
+        run: |
+          set -euo pipefail
+          BGE=app/src/main/assets/models/bge-small-zh
+          YOLO=app/src/main/assets/models/yolo
+          mkdir -p "$BGE" "$YOLO"
+
+          if [ ! -f "$BGE/model_quantized.onnx" ]; then
+            base=https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main
+            curl -sSL --fail --retry 5 -o "$BGE/model_quantized.onnx" "$base/onnx/model_quantized.onnx"
+            curl -sSL --fail --retry 5 -o "$BGE/vocab.txt"             "$base/vocab.txt"
+            curl -sSL --fail --retry 5 -o "$BGE/tokenizer_config.json" "$base/tokenizer_config.json"
+          fi
+
+          if [ ! -f "$YOLO/detector.onnx" ]; then
+            # Apache-2.0 YOLOX tiny - NOT Ultralytics YOLOv8/v11, whose weights are
+            # AGPL-3.0 and would relicense this MIT app.
+            curl -sSL --fail --retry 5 -o "$YOLO/detector.onnx" \
+              https://huggingface.co/cj-mills/yolox-coco-baseline-onnx/resolve/main/coco-yolox_tiny.onnx
+          fi
+
+          if [ ! -f "$YOLO/coco_labels.txt" ]; then
+          # A heredoc, not 'printf %s\n a b c': multi-word labels such as
+          # "traffic light" and "potted plant" would be split into separate
+          # arguments, silently shifting every class index by one or more.
+          cat > "$YOLO/coco_labels.txt" <<'COCO'
+          person
+          bicycle
+          car
+          motorcycle
+          airplane
+          bus
+          train
+          truck
+          boat
+          traffic light
+          fire hydrant
+          stop sign
+          parking meter
+          bench
+          bird
+          cat
+          dog
+          horse
+          sheep
+          cow
+          elephant
+          bear
+          zebra
+          giraffe
+          backpack
+          umbrella
+          handbag
+          tie
+          suitcase
+          frisbee
+          skis
+          snowboard
+          sports ball
+          kite
+          baseball bat
+          baseball glove
+          skateboard
+          surfboard
+          tennis racket
+          bottle
+          wine glass
+          cup
+          fork
+          knife
+          spoon
+          bowl
+          banana
+          apple
+          sandwich
+          orange
+          broccoli
+          carrot
+          hot dog
+          pizza
+          donut
+          cake
+          chair
+          couch
+          potted plant
+          bed
+          dining table
+          toilet
+          tv
+          laptop
+          mouse
+          remote
+          keyboard
+          cell phone
+          microwave
+          oven
+          toaster
+          sink
+          refrigerator
+          book
+          clock
+          vase
+          scissors
+          teddy bear
+          hair drier
+          toothbrush
+          COCO
+          fi
+
+          ls -l "$BGE" "$YOLO"
+
+      - name: Cache the native build
+        uses: actions/cache@v4
+        with:
+          path: app/.cxx
+          key: ${{ runner.os }}-cxx-${{ hashFiles('app/src/main/cpp/**', 'app/build.gradle.kts') }}
+          restore-keys: ${{ runner.os }}-cxx-
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --console=plain
+
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug --console=plain
+
+      - name: Upload unit test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: '**/build/reports/tests/'
+          if-no-files-found: warn
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
