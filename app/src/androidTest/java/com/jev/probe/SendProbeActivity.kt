@@ -15,7 +15,13 @@ import com.jev.probe.test.R
  */
 class SendProbeActivity : Activity() {
 
+    companion object {
+        /** So the test can finish the screen it started from the test process. */
+        @Volatile var current: SendProbeActivity? = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        current = this
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val input = EditText(this).apply { id = R.id.probe_input }
@@ -26,5 +32,10 @@ class SendProbeActivity : Activity() {
         root.addView(send)
         root.addView(status)
         setContentView(root)
+    }
+
+    override fun onDestroy() {
+        if (current === this) current = null
+        super.onDestroy()
     }
 }
