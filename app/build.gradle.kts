@@ -1,3 +1,4 @@
+import java.io.File
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -14,7 +15,7 @@ val releaseProps = Properties().apply {
     // java.io.File, NOT Gradle's file(): on a non-Windows host the latter parses
     // "H:/..." as a URL scheme ("Cannot convert URL ... to a file") and throws
     // before the exists() check can skip it. Only release builds need this.
-    val f = java.io.File(path)
+    val f = File(path)   // 'java.io.File' would resolve 'java' to the Gradle Java extension
     if (f.exists()) FileInputStream(f).use { load(it) }
 }
 
