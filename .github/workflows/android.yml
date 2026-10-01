@@ -190,6 +190,12 @@ jobs:
           key: ${{ runner.os }}-cxx-${{ hashFiles('app/src/main/cpp/**', 'app/build.gradle.kts') }}
           restore-keys: ${{ runner.os }}-cxx-
 
+      # Guard: pushing from Windows records 100644, and Linux then fails with
+      # exit 126 ("not executable"). The mode is fixed in git as well; this keeps
+      # a future re-add from silently breaking the build.
+      - name: Ensure gradlew is executable
+        run: chmod +x gradlew
+
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --console=plain
 
