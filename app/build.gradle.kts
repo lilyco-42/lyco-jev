@@ -71,8 +71,14 @@ android {
     buildTypes {
         debug {
             // The instrumented test that actually executes the on-device judge
-            // runs on the x86_64 emulator; release stays arm64-only.
-            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+            // runs on the x86_64 emulator, so debug carries both ABIs. A
+            // distribution build passes -PdistAbi to drop the emulator one:
+            // every real phone is arm64 and the x86_64 natives are ~60 MB of
+            // the APK.
+            ndk {
+                abiFilters += if (project.hasProperty("distAbi")) listOf("arm64-v8a")
+                else listOf("arm64-v8a", "x86_64")
+            }
         }
         release {
             isMinifyEnabled = false
