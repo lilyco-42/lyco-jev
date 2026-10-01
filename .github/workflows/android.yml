@@ -44,12 +44,30 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # No android-actions/setup-android here: on ubuntu-latest it runs the
+      # runner's own sdkmanager and has been failing with exit 1 while accepting
+      # licences (its bundled action is stale against the runner's cmdline-tools,
+      # and 'yes | sdkmanager --licenses' trips pipefail when sdkmanager exits).
+      # The SDK is preinstalled; drive it directly.
       - name: Install platform, NDK and CMake
         run: |
-          yes | sdkmanager --licenses > /dev/null
+          set -euo pipefail
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+
+          # sdkmanager is usually on PATH; fall back to whichever cmdline-tools
+          # revision the image shipped.
+          if ! command -v sdkmanager > /dev/null; then
+            for d in "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin "$ANDROID_HOME"/cmdline-tools/*/bin; do
+              [ -x "$d/sdkmanager" ] && export PATH="$PATH:$d" && break
+            done
+          fi
+          sdkmanager --version
+
+          # 'yes' gets SIGPIPE when sdkmanager finishes, so this pipeline is
+          # expected to be non-zero even on success.
+          yes | sdkmanager --licenses > /dev/null || true
+
           sdkmanager "platforms;android-35" "build-tools;35.0.0" \
                      "ndk;30.0.15729638" "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/30.0.15729638" >> "$GITHUB_ENV"
