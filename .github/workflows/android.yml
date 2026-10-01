@@ -242,7 +242,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: >-
             ./gradlew :app:connectedDebugAndroidTest
-            -Pandroid.testInstrumentationRunnerArguments.class=com.jev.probe.AppSmokeInstrumentedTest,com.jev.probe.capture.vision.VisionInstrumentedTest,com.jev.probe.core.kb.MemoryInstrumentedTest,com.jev.probe.capture.ocr.OcrInstrumentedTest
+            -Pandroid.testInstrumentationRunnerArguments.class=com.jev.probe.AutoSendClickInstrumentedTest,com.jev.probe.AppSmokeInstrumentedTest,com.jev.probe.capture.vision.VisionInstrumentedTest,com.jev.probe.core.kb.MemoryInstrumentedTest,com.jev.probe.capture.ocr.OcrInstrumentedTest
             --console=plain
 
       - name: Upload instrumented test reports

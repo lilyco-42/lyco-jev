@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Throwaway chat screen used by AutoSendClickInstrumentedTest. Exported
+             only because Instrumentation.startActivitySync is stricter about
+             non-exported activities that live in the test APK rather than the
+             target app. It exists only on the ephemeral emulator. -->
+        <activity
+            android:name="com.jev.probe.SendProbeActivity"
+            android:exported="true" />
+    </application>
+</manifest>

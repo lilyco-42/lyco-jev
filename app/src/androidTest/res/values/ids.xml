@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ids for the auto-send probe screen, so the nodes can be looked up by
+     viewIdResourceName exactly like ChatAppAdapter.sendNode looks up a real
+     app's send control. -->
+<resources>
+    <item name="probe_input" type="id" />
+    <item name="probe_send" type="id" />
+    <item name="probe_status" type="id" />
+</resources>
