@@ -15,9 +15,12 @@
 *.class
 local.properties
 
-# Machine-specific
+# Machine-specific / signing material - must never be committed
 env.ps1
 gradle.properties.local
+keystore.properties
+*.jks
+*.keystore
 
 # IDE
 .idea/
