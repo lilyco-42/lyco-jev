@@ -82,7 +82,12 @@ class AutoSendClickInstrumentedTest {
             val send = inst.uiAutomation.rootInActiveWindow
                 ?.findAccessibilityNodeInfosByViewId(id(R.id.probe_send))?.firstOrNull()
             assertTrue("send node not found", send != null)
-            assertTrue("ACTION_CLICK was rejected", send!!.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+            // Report the flags, so a rejection says WHY rather than just "false".
+            assertTrue("send node is not actionable: clickable=" + send!!.isClickable +
+                " enabled=" + send.isEnabled + " visible=" + send.isVisibleToUser +
+                " class=" + send.className,
+                send.isClickable && send.isEnabled && send.isVisibleToUser)
+            assertTrue("ACTION_CLICK was rejected", send.performAction(AccessibilityNodeInfo.ACTION_CLICK))
             inst.waitForIdleSync()
 
             // 4) the click landed: the screen reports what it "sent"
