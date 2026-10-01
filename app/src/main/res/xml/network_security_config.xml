@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Every resource this app fetches must be HTTPS.
+
+  platform default: targetSdk 28+ already refuses cleartext, so this states an
+  existing guarantee rather than changing behaviour - but it makes the requirement
+  explicit and keeps it true if the default is ever relaxed, and it turns "someone
+  typed an http:// base URL" into a clear, early failure instead of a silent
+  downgrade. Verified alongside it: every URL in the app is https (the judge and
+  reply providers, HuggingFace, and the lain42 OSS mirror for the GGUF weights).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
