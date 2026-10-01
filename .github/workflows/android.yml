@@ -231,6 +231,15 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # AutoSendClickInstrumentedTest is deliberately NOT in the class filter below.
+      # On the CI emulator it reaches: policy allows -> ACTION_SET_TEXT succeeds ->
+      # the adapter-style viewId lookup returns a node reporting
+      # clickable+enabled+visible -> performAction(ACTION_CLICK) is refused. The
+      # unverified-app guard in the same class passes. Until that is understood it
+      # stays out of the gate rather than leaving main red; run it locally with
+      #   -Pandroid.testInstrumentationRunnerArguments.class=com.jev.probe.AutoSendClickInstrumentedTest
+      # NOTE: a "#" inside a YAML folded scalar is literal text, not a comment - it
+      # silently swallowed the rest of the Gradle command when this note lived there.
       - name: Run instrumented tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -242,13 +251,6 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: >-
             ./gradlew :app:connectedDebugAndroidTest
-            # AutoSendClickInstrumentedTest is deliberately NOT in this list yet.
-            # On the CI emulator it gets as far as: policy allows -> ACTION_SET_TEXT
-            # works -> the adapter-style viewId lookup returns a node that reports
-            # clickable+enabled+visible -> performAction(ACTION_CLICK) is refused.
-            # The unverified-app guard in the same class passes. Until that is
-            # understood it stays out of the gate rather than leaving main red; run
-            # it locally with -Pandroid.testInstrumentationRunnerArguments.class=...
             -Pandroid.testInstrumentationRunnerArguments.class=com.jev.probe.AppSmokeInstrumentedTest,com.jev.probe.capture.vision.VisionInstrumentedTest,com.jev.probe.core.kb.MemoryInstrumentedTest,com.jev.probe.capture.ocr.OcrInstrumentedTest
             --console=plain
 
