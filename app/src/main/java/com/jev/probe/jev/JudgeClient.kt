@@ -18,6 +18,39 @@ import org.json.JSONObject
 class JudgeClient(private val prefs: Prefs) {
 
     /**
+     * The on-device judge, kept across calls.
+     *
+     * This used to be constructed inline on every judgment - `LocalJudgeClient(...)`
+     * right at the call site - which meant a fresh nativeLoad (an mmap of the
+     * 0.53 GB weight plus a warm-up) for every judge call. A single analysis runs
+     * the judge and then ranks the drafted replies through the judge again, so one
+     * tap paid that cost twice. The drafting route already cached its client; this
+     * one did not.
+     */
+    @Volatile private var localJudge: LocalJudgeClient? = null
+
+    /**
+     * Where weight preparation reports progress. Forwarded to [localJudge] on
+     * creation, so the panel can show the unpack instead of a frozen
+     * "分析中…". See [LocalJudgeClient.onPrepare].
+     */
+    @Volatile var onPrepare: ((done: Long, total: Long, extracting: Boolean) -> Unit)? = null
+        set(value) {
+            field = value
+            localJudge?.onPrepare = value
+        }
+
+    private fun localJudge(): LocalJudgeClient {
+        localJudge?.let { return it }
+        return synchronized(this) {
+            localJudge ?: LocalJudgeClient(prefs.appContext).also {
+                it.onPrepare = onPrepare
+                localJudge = it
+            }
+        }
+    }
+
+    /**
      * The 7 judgment questions (fast, ~1s). Errors are returned, not thrown.
      *
      * @param ctx D-stage knowledge context; null or empty means the request body
@@ -82,7 +115,7 @@ class JudgeClient(private val prefs: Prefs) {
 
         // Goal 1: the local provider never leaves the phone and needs no key.
         if (prefs.judgeProvider == Prefs.PROVIDER_LOCAL) {
-            return LocalJudgeClient(prefs.appContext).decide(state, questions)
+            return localJudge().decide(state, questions)
         }
 
         val enriched = background.isNotBlank() || history.isNotEmpty()

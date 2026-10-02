@@ -24,6 +24,19 @@ class JevClient(prefs: Prefs) {
     /** Created on first use — it is a second half-gigabyte model. */
     @Volatile private var localReply: LocalReplyClient? = null
 
+    /**
+     * Live progress while a bundled weight is unpacked and mapped, forwarded to
+     * whichever local clients exist. Both routes can carry the cost: the judge on
+     * the first judgment, the drafter on the first draft. See
+     * [LocalJudgeClient.onPrepare] for the total = -1 / -2 contract.
+     */
+    @Volatile var onPrepare: ((done: Long, total: Long, extracting: Boolean) -> Unit)? = null
+        set(value) {
+            field = value
+            judgeClient.onPrepare = value
+            localReply?.onPrepare = value
+        }
+
     /** The 7 judgment questions. Errors come back inside [Analysis.error]. */
     fun judge(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext? = null): Analysis =
         judgeClient.judge(snapshot, relationship, ctx)
@@ -47,7 +60,10 @@ class JevClient(prefs: Prefs) {
             return replyClient.draft(snapshot, relationship, ctx)
         }
         val client = localReply ?: synchronized(this) {
-            localReply ?: LocalReplyClient(prefs).also { localReply = it }
+            localReply ?: LocalReplyClient(prefs).also {
+                it.onPrepare = onPrepare
+                localReply = it
+            }
         }
         return client.draft(snapshot, relationship, ctx)
     }

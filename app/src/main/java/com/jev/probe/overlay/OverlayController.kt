@@ -331,6 +331,37 @@ class OverlayController(private val ctx: Context) {
         if (!expanded) toggle()
     }
 
+    /**
+     * Live readout while a bundled weight is unpacked and mapped.
+     *
+     * First use moves 505 MB (judge) + 508 MB (drafter) out of the APK, and even a
+     * warm start spends real time in nativeLoad. "分析中…" for all of that reads as
+     * a hang, and users were being told it was a *download* when nothing was
+     * downloaded at all.
+     *
+     * @param extracting true when unpacking the copy that shipped in the APK,
+     *   false on the (rarer) path where no bundled copy existed and the weight is
+     *   actually being fetched.
+     * @param done bytes moved so far
+     * @param total bytes expected, or -1 when unknown, or -2 for "unpacked, now
+     *   mapping" - a distinct phase that would otherwise look like a finished bar
+     *   that then sits there.
+     */
+    fun showPrepare(extracting: Boolean, done: Long, total: Long) {
+        ensureRoot(); bubble?.alpha = 1f
+        val verb = if (extracting) "解压" else "下载"
+        val text = when {
+            total == -2L -> "正在载入端侧模型…"
+            total > 0L -> {
+                val pct = (done * 100 / total).coerceIn(0, 100)
+                "正在$verb 端侧模型 $pct%（共 ${total / (1024 * 1024)} MB，仅首次）"
+            }
+            else -> "正在$verb 端侧模型…（仅首次）"
+        }
+        setContent(listOf(hint(text)))
+        if (!expanded) toggle()
+    }
+
     /** How many knowledge notes / history lines went into the pending analysis. */
     fun setContextInfo(notes: Int, history: Int) {
         ctxNotes = notes; ctxHistory = history
