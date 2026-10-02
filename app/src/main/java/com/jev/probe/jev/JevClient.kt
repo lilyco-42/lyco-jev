@@ -7,14 +7,22 @@ import com.jev.probe.core.RankedReply
 import com.jev.probe.core.kb.ChatContext
 
 /**
- * Thin facade over the three split clients so callers keep one entry point.
+ * Thin facade over the split clients so callers keep one entry point.
  * Construct with [Prefs] — every route reads its own address / key / model from
  * there, so switching providers in settings takes effect on the next call.
+ *
+ * Offline-first: when the judge route is [Prefs.PROVIDER_LOCAL] the candidate
+ * replies are drafted on-device too ([LocalReplyClient]) rather than over HTTP,
+ * so a local install never needs a network at any step.
  */
 class JevClient(prefs: Prefs) {
 
+    private val prefs = prefs
     private val judgeClient = JudgeClient(prefs)
     private val replyClient = ReplyClient(prefs)
+
+    /** Created on first use — it is a second half-gigabyte model. */
+    @Volatile private var localReply: LocalReplyClient? = null
 
     /** The 7 judgment questions. Errors come back inside [Analysis.error]. */
     fun judge(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext? = null): Analysis =
@@ -26,8 +34,22 @@ class JevClient(prefs: Prefs) {
         relationship: String,
         ctx: ChatContext? = null
     ): List<RankedReply> {
-        val candidates = replyClient.draft(snapshot, relationship, ctx)
+        val candidates = draft(snapshot, relationship, ctx)
         return judgeClient.rank(snapshot, relationship, candidates, ctx)
+    }
+
+    /**
+     * Local by default. A cloud judge keeps the cloud drafting route: someone who
+     * configured an endpoint expects that endpoint to be the one used.
+     */
+    private fun draft(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext?): List<String> {
+        if (prefs.judgeProvider != Prefs.PROVIDER_LOCAL) {
+            return replyClient.draft(snapshot, relationship, ctx)
+        }
+        val client = localReply ?: synchronized(this) {
+            localReply ?: LocalReplyClient(prefs).also { localReply = it }
+        }
+        return client.draft(snapshot, relationship, ctx)
     }
 
     /** Judge + replies, sequential. Used by the settings connectivity test. */

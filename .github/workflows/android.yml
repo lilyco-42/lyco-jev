@@ -97,18 +97,40 @@ jobs:
               https://huggingface.co/cj-mills/yolox-coco-baseline-onnx/resolve/main/coco-yolox_tiny.onnx
           fi
 
-          # The 0.53 GB judge weights, bundled so an install is offline from the
-          # moment it is installed. Fetched from the lain42 OSS mirror rather than
-          # HuggingFace (slow or unreachable from mainland China). Verified against
-          # the published hash, because a truncated or swapped weight file would
-          # otherwise ship inside the APK and only fail on someone's phone.
-          GGUF=app/src/main/assets/models/jev-style/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf
-          if [ ! -f "$GGUF" ]; then
-            mkdir -p "$(dirname "$GGUF")"
-            curl -sSL --fail --retry 5 -o "$GGUF" \
-              https://dl.lain42.top/models/hf/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF/resolve/edf37c26a1098f83cf4264b8adbe0dca2d2ebb0c/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf
+          # The two GGUF weights are fetched ONLY for a distribution build
+          # (workflow_dispatch). On a plain push they would add 1 GB of download,
+          # pack a 1.1 GB APK and upload it as an artifact - for an APK nobody
+          # downloads from CI, and over the artifact quota. Every test that needs a
+          # weight stages it locally instead (see the LocalJudge / LocalReply
+          # instrumented tests, which are deliberately not in this gate).
+          #
+          # Fetched from the lain42 OSS mirror rather than HuggingFace (slow or
+          # unreachable from mainland China), and verified against the published
+          # hash: a truncated or swapped weight would otherwise ship inside the APK
+          # and only fail on someone's phone.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            GGUF=app/src/main/assets/models/jev-style/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf
+            if [ ! -f "$GGUF" ]; then
+              mkdir -p "$(dirname "$GGUF")"
+              curl -sSL --fail --retry 5 -o "$GGUF" \
+                https://dl.lain42.top/models/hf/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF/resolve/edf37c26a1098f83cf4264b8adbe0dca2d2ebb0c/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf
+            fi
+            echo "0a19bc29bacc33e0d871146c8612b24dd14c2ed2e61cedeb7a928b0852628bac  $GGUF" | sha256sum -c -
+
+            # The drafting weight. Jev-Style answers only yes/no, so candidate
+            # replies need a generative model; Qwen3.5-0.8B is the base Jev-Style
+            # was fine-tuned from. Not in the lain42 mirror yet, so it comes from
+            # HuggingFace.
+            REPLY=app/src/main/assets/models/reply/Qwen3.5-0.8B-Q4_K_M.gguf
+            if [ ! -f "$REPLY" ]; then
+              mkdir -p "$(dirname "$REPLY")"
+              curl -sSL --fail --retry 5 -o "$REPLY" \
+                https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf
+            fi
+            echo "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517  $REPLY" | sha256sum -c -
+          else
+            echo "push build: skipping the GGUF weights (distribution-only)"
           fi
-          echo "0a19bc29bacc33e0d871146c8612b24dd14c2ed2e61cedeb7a928b0852628bac  $GGUF" | sha256sum -c -
 
           if [ ! -f "$YOLO/coco_labels.txt" ]; then
           # A heredoc, not 'printf %s\n a b c': multi-word labels such as

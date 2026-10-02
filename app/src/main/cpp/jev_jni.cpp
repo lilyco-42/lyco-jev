@@ -205,4 +205,134 @@ Java_com_jev_probe_jev_LocalJevNative_nativeDecide(JNIEnv *env, jclass, jlong h,
     return res;
 }
 
+/**
+ * Render a system+user turn with the model's own chat template and tokenise it
+ * with special tokens ENABLED.
+ *
+ * The judge path disables them on purpose (text inside state/options must never
+ * act as a control token). A generative prompt is the opposite: it is made of
+ * control tokens (<|im_start|> and friends), and tokenising those as literal
+ * text produces a prompt the model has never seen.
+ *
+ * @param jskipThinking when true the assistant header is appended here together
+ *   with an EMPTY think block. Qwen3.5 reasons by default, and this is the only
+ *   thing that stopped it: asking in the prompt text ("/no_think", "不要思考")
+ *   changed nothing - 120 sampled tokens were still all reasoning. With the empty
+ *   block prefilled, the same prompt answers in 51 tokens.
+ */
+JNIEXPORT jintArray JNICALL
+Java_com_jev_probe_jev_LocalJevNative_nativeChatPrompt(JNIEnv *env, jclass, jlong h,
+                                                       jstring jsystem, jstring juser,
+                                                       jboolean jskipThinking) {
+    JevLocal *j = as(h);
+    if (!j || !j->model || !j->vocab) return nullptr;
+    std::lock_guard<std::mutex> lock(j->mu);
+
+    const char *tmpl = llama_model_chat_template(j->model, nullptr);
+    if (!tmpl) {
+        LOGE("model carries no chat template");
+        return nullptr;
+    }
+
+    const std::string sys = jstr(env, jsystem);
+    const std::string usr = jstr(env, juser);
+    llama_chat_message msgs[2] = {
+        {"system", sys.c_str()},
+        {"user", usr.c_str()},
+    };
+
+    // With the empty think block we must NOT let the template emit the assistant
+    // header: it has to come after the block, not before it.
+    const bool skipThinking = (jskipThinking == JNI_TRUE);
+    const bool addAss = !skipThinking;
+    const int extra = skipThinking ? 64 : 0;
+
+    // A zero-length call only measures the rendered size.
+    int need = llama_chat_apply_template(tmpl, msgs, 2, addAss, nullptr, 0);
+    if (need <= 0) {
+        LOGE("chat template measure failed: %d", need);
+        return nullptr;
+    }
+    std::vector<char> buf((size_t) need + (size_t) extra + 1, 0);
+    int wrote = llama_chat_apply_template(tmpl, msgs, 2, addAss, buf.data(), (int32_t) buf.size());
+    if (wrote <= 0) return nullptr;
+
+    std::string prompt(buf.data(), (size_t) wrote);
+    if (skipThinking) prompt += "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+
+    int n = -llama_tokenize(j->vocab, prompt.c_str(), (int32_t) prompt.size(), nullptr, 0, true, true);
+    if (n <= 0) return nullptr;
+    std::vector<llama_token> toks((size_t) n);
+    int got = llama_tokenize(j->vocab, prompt.c_str(), (int32_t) prompt.size(), toks.data(), n, true, true);
+    if (got < 0) return nullptr;
+    toks.resize((size_t) got);
+
+    jintArray out = env->NewIntArray((jsize) toks.size());
+    if (out && !toks.empty()) env->SetIntArrayRegion(out, 0, (jsize) toks.size(), toks.data());
+    return out;
+}
+
+/**
+ * Sample a continuation from a prompt built by nativeChatPrompt.
+ *
+ * This needs a generative weight. Jev-Style-0.8B-Decision-v3 cannot do it: it was
+ * trained down to a yes/no decision head, and a 160-token sample came back as
+ * "yes no no no No yes no ..." - all 160 tokens were yes/no. That measurement is
+ * why the drafting route carries a second, generative GGUF.
+ */
+JNIEXPORT jstring JNICALL
+Java_com_jev_probe_jev_LocalJevNative_nativeGenerate(JNIEnv *env, jclass, jlong h,
+                                                     jintArray jids, jint maxTokens,
+                                                     jfloat temperature, jfloat topP) {
+    JevLocal *j = as(h);
+    if (!j || !j->ctx || !j->vocab) return nullptr;
+    std::lock_guard<std::mutex> lock(j->mu);
+
+    const jsize n = env->GetArrayLength(jids);
+    if (n <= 0 || (int32_t) n >= j->n_ctx) return nullptr;
+
+    std::vector<llama_token> ids((size_t) n);
+    env->GetIntArrayRegion(jids, 0, n, ids.data());
+
+    llama_memory_clear(llama_get_memory(j->ctx), true);
+
+    llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(topP, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+    // Prefill the whole prompt in one batch; llama_batch_get_one leaves pos null,
+    // so the memory module assigns 0..n-1 and the loop below continues from n.
+    llama_batch batch = llama_batch_get_one(ids.data(), (int32_t) n);
+    if (llama_decode(j->ctx, batch) != 0) {
+        LOGE("generate: prefill failed (%d tokens)", (int) n);
+        llama_sampler_free(smpl);
+        return nullptr;
+    }
+
+    std::string out;
+    int n_past = (int) n;
+    for (int i = 0; i < maxTokens; ++i) {
+        if (n_past + 1 >= j->n_ctx) break;
+        llama_token id = llama_sampler_sample(smpl, j->ctx, -1);
+        if (llama_vocab_is_eog(j->vocab, id)) break;
+
+        char buf[512];
+        int len = llama_token_to_piece(j->vocab, id, buf, (int32_t) sizeof(buf), 0, true);
+        if (len > 0) out.append(buf, (size_t) len);
+
+        llama_batch nb = llama_batch_get_one(&id, 1);
+        if (llama_decode(j->ctx, nb) != 0) {
+            LOGE("generate: decode failed at token %d", i);
+            break;
+        }
+        ++n_past;
+    }
+
+    llama_sampler_free(smpl);
+    LOGI("generate: %d new tokens, %d chars", n_past - (int) n, (int) out.size());
+    return env->NewStringUTF(out.c_str());
+}
+
 }  // extern "C"

@@ -10,6 +10,10 @@ import org.json.JSONObject
  * The generative route: any OpenAI-compatible `/chat/completions` endpoint.
  * Drafts the 3 candidate replies, and (D stage) summarizes text. Reads
  * replyBaseUrl / replyKey / replyModel from [Prefs].
+ *
+ * The prompt and the parser live in [ReplyPrompt], shared with the on-device
+ * route ([LocalReplyClient]) so the judge ranks comparable candidates whether or
+ * not the phone had a network.
  */
 class ReplyClient(private val prefs: Prefs) {
 
@@ -21,35 +25,10 @@ class ReplyClient(private val prefs: Prefs) {
      *        consistent with them and invent nothing beyond them.
      */
     fun draft(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext? = null): List<String> {
-        val convo = snapshot.messages.takeLast(10).joinToString("\n") {
-            (if (it.side == "me") "我" else "对方") + "：" + it.text
-        }
-        val sys = "你是中文即时通讯回复助手。只输出一个 JSON 数组，含且仅含 3 条候选回复文本，" +
-            "三条策略要有区别（例如：一条稳妥承接、一条给具体行动或承诺、一条简短低姿态）。" +
-            "每条不超过 40 字，口语、自然、像真人在聊天软件里发消息。不要解释，不要加引号以外的内容，直接输出 JSON 数组。"
-        val user = knowledgeBlock(relationship, ctx) +
-            "关系：$relationship\n\n最近对话：\n$convo\n\n请给出 3 条候选回复。"
-        return parseThree(chat(sys, user, temperature = 0.8))
-    }
-
-    /** The background + history preamble; empty string when there is no context. */
-    private fun knowledgeBlock(relationship: String, ctx: ChatContext?): String {
-        ctx ?: return ""
-        val background = ctx.background(relationship)
-        val history = ctx.history
-        if (background.isBlank() && history.isEmpty()) return ""
-        val sb = StringBuilder()
-        sb.append("以下是关于我和对方的背景与知识库，回复必须与之一致，")
-            .append("可以直接引用其中事实，不要编造知识库里没有的事实。\n")
-        if (background.isNotBlank()) sb.append(background).append('\n')
-        if (history.isNotEmpty()) {
-            sb.append("\n更早的聊天记录（越靠下越新）：\n")
-            history.takeLast(prefs.contextHistoryCount.coerceIn(0, 100)).forEach {
-                sb.append(if (it.side == "me") "我：" else "对方：").append(it.text).append('\n')
-            }
-        }
-        sb.append('\n')
-        return sb.toString()
+        val user = ReplyPrompt.user(
+            relationship, ctx, ReplyPrompt.convo(snapshot), prefs.contextHistoryCount
+        )
+        return ReplyPrompt.parseThree(chat(ReplyPrompt.SYSTEM, user, temperature = 0.8))
     }
 
     /**
@@ -81,26 +60,5 @@ class ReplyClient(private val prefs: Prefs) {
         val resp = HttpJson.post(url, prefs.effectiveReplyKey(), body, Route.REPLY, HttpJson.headersFor(url))
         return resp.optJSONArray("choices")?.optJSONObject(0)
             ?.optJSONObject("message")?.optString("content") ?: ""
-    }
-
-    private fun parseThree(content: String): List<String> {
-        val start = content.indexOf('[')
-        val end = content.lastIndexOf(']')
-        if (start >= 0 && end > start) {
-            try {
-                val arr = JSONArray(content.substring(start, end + 1))
-                val out = ArrayList<String>()
-                for (i in 0 until arr.length()) out.add(arr.getString(i).trim())
-                if (out.size >= 3) return out.take(3)
-                while (out.size < 3) out.add("（稍等，我看下）")
-                return out
-            } catch (_: Exception) { }
-        }
-        // Fallback: split lines.
-        val lines = content.split("\n").map { it.trim().trimStart('-', '*', '1', '2', '3', '.', ' ', '"') }
-            .filter { it.isNotBlank() }
-        val out = lines.take(3).toMutableList()
-        while (out.size < 3) out.add("（稍等，我看下）")
-        return out
     }
 }
