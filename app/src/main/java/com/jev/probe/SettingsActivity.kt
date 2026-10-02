@@ -27,6 +27,7 @@ import com.jev.probe.core.Prefs
 import com.jev.probe.core.kb.KbSelfCheck
 import com.jev.probe.core.kb.KbStore
 import com.jev.probe.jev.JudgeClient
+import com.jev.probe.jev.LocalJevModel
 import com.jev.probe.jev.ReplyClient
 import com.jev.probe.jev.VisionClient
 import java.util.concurrent.Executors
@@ -184,14 +185,39 @@ class SettingsActivity : AppCompatActivity() {
             }
             worker.execute {
                 val t0 = System.currentTimeMillis()
-                val demo = ChatSnapshot("连通测试", listOf(
-                    Msg("other", "在吗？"), Msg("me", "在")))
-                val a = JudgeClient(probe).judge(demo, prefs.relationship)
-                val ms = System.currentTimeMillis() - t0
-                main.post {
-                    judgeResult.text = if (a.error != null) "失败（${ms}ms）：${a.error}"
-                    else "成功 ${ms}ms · 意图=${a.trueIntent?.choice ?: "?"}" +
-                        "（置信 ${pct(a.trueIntent?.confidence)}）"
+                try {
+                    // The first on-device run has to materialise 0.5 GB of weights.
+                    // With no feedback that is indistinguishable from a hang, so the
+                    // label tracks it byte by byte.
+                    if (provider == Prefs.PROVIDER_LOCAL && !LocalJevModel.isPresent(probe.appContext)) {
+                        main.post { judgeResult.text = "准备端侧模型…" }
+                        LocalJevModel.ensure(probe.appContext) { done, total ->
+                            val mb = done / (1024 * 1024)
+                            val text = if (total > 0) {
+                                "准备端侧模型 ${mb}/${total / (1024 * 1024)} MB（${done * 100 / total}%）"
+                            } else {
+                                "准备端侧模型 ${mb} MB…"
+                            }
+                            main.post { judgeResult.text = text }
+                        }
+                    }
+                    val demo = ChatSnapshot("连通测试", listOf(
+                        Msg("other", "在吗？"), Msg("me", "在")))
+                    val a = JudgeClient(probe).judge(demo, prefs.relationship)
+                    val ms = System.currentTimeMillis() - t0
+                    main.post {
+                        judgeResult.text = if (a.error != null) "失败（${ms}ms）：${a.error}"
+                        else "成功 ${ms}ms · 意图=${a.trueIntent?.choice ?: "?"}" +
+                            "（置信 ${pct(a.trueIntent?.confidence)}）"
+                    }
+                } catch (e: Throwable) {
+                    // Previously an exception here killed the worker silently and the
+                    // label stayed on "测试中…" forever - nothing to see, no error.
+                    val ms = System.currentTimeMillis() - t0
+                    Log.e(TAG, "judge test failed", e)
+                    main.post {
+                        judgeResult.text = "失败（${ms}ms）：${e.message ?: e.javaClass.simpleName}"
+                    }
                 }
             }
         })
