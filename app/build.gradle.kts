@@ -33,12 +33,18 @@ android {
         }
     }
 
+    androidResources {
+        // The bundled 0.53 GB GGUF barely compresses, so deflating it would cost
+        // build time and install time for almost nothing.
+        noCompress += "gguf"
+    }
+
     defaultConfig {
         applicationId = "com.jev.probe"
         minSdk = 30
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 7
+        versionName = "1.4-lyco.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
