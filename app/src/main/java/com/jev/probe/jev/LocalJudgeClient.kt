@@ -1,7 +1,10 @@
 package com.jev.probe.jev
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.exp
@@ -30,13 +33,29 @@ class LocalJudgeClient(private val context: Context) {
         synchronized(lock) {
             if (handle != 0L) return handle
             LocalJevNative.ensureLoaded()?.let { throw IllegalStateException(it) }
+            // The 0.53 GB of weights are not in the APK, so the very first judgment
+            // fetches them. Without this the UI just looks frozen for a minute.
+            val firstRun = !LocalJevModel.isPresent(context)
+            if (firstRun) {
+                announce("首次使用：正在下载端侧判读模型（约 530 MB，仅此一次），请稍候…")
+            }
             val model = LocalJevModel.ensure(context)
+            if (firstRun) {
+                announce("端侧判读模型已就绪，之后判读完全离线。")
+            }
             val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
             val h = LocalJevNative.nativeLoad(model.absolutePath, N_CTX, threads)
             if (h == 0L) throw IllegalStateException("本地模型加载失败：" + model.name)
             handle = h
             Log.i(TAG, "local judge ready: " + model.name + " ctx=" + N_CTX + " threads=" + threads)
             return h
+        }
+    }
+
+    /** Safe to call from the judge worker thread. */
+    private fun announce(message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
         }
     }
 

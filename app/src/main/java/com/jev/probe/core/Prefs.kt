@@ -73,9 +73,18 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
 
     // ---------------------------------------------------------------- judge
 
-    /** "bocha" | "openrouter" | "typesafe" | "vercel" | "zen" | "custom". */
+    /**
+     * Which judge route a *fresh install* uses.
+     *
+     * Local by default: the premise of this fork is that judging happens on the
+     * phone - offline, keyless, free - so a new install must not silently start on
+     * a cloud provider and leave "本地端侧" as a hidden 7th option. Anyone who has
+     * already picked a provider keeps it, because the stored value wins.
+     *
+     * "bocha" | "openrouter" | "typesafe" | "vercel" | "zen" | "custom" | "local".
+     */
     var judgeProvider: String
-        get() = sp.getString(K_JUDGE_PROVIDER, PROVIDER_OPENROUTER) ?: PROVIDER_OPENROUTER
+        get() = sp.getString(K_JUDGE_PROVIDER, PROVIDER_LOCAL) ?: PROVIDER_LOCAL
         set(v) = sp.edit().putString(K_JUDGE_PROVIDER, v.trim()).apply()
 
     /** Host root; the path is appended per provider (see [judgeEndpoint]). */
