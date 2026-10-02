@@ -92,6 +92,49 @@ adb push Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf /data/local/tmp/
 
 ## 分发与首次使用（v1.4 系列）
 
+### 候选回复也在端侧生成（离线闭环的最后一块）
+
+判读很早就本地了，但**候选回复**一直由 `ReplyClient.draft()` 走 HTTP 生成——所以选了「本地端侧（离线）」的安装，判读有、**选项没有**，而选项正是 galgame 那件事。断网时那一步抛异常，面板直接报错。
+
+**Jev-Style 干不了这活**：它被训成了判断模型，输出只剩 yes/no —— 实测 160 个采样 token 全是 `yes`/`no`。所以打进**第二个权重**：`Qwen3.5-0.8B` Q4_K_M（507.8 MiB，Apache-2.0），正是 Jev-Style 的 base。
+
+```
+assets/models/reply/Qwen3.5-0.8B-Q4_K_M.gguf
+sha256 bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517
+```
+
+代价：APK 从 ~594 MiB 涨到 **~1.1 GB**（两个权重都打进 assets）。
+
+#### 两个必须记下来的坑
+
+1. **Qwen3.5 默认开思考，而且 prompt 关不掉**。写 `/no_think`、写「不要思考」，都无效——110 个 token 全烧在 `<think>` 里。
+   **唯一有效的是预填空 think 块**：`add_ass=false` 渲染到 assistant 之前，再手工追加
+   `<|im_start|>assistant\n<think>\n\n</think>\n\n`。同一个 prompt 从「110 token 全在推理」变成 **51 token 直接给答案**。
+   实现在 `nativeChatPrompt(..., skipThinking)`。
+
+2. **小模型下，禁令没用，示例才有用**。同一段对话（加班/电影）：
+
+   | prompt | 输出 |
+   |---|---|
+   | 原始 | 编出电影名：`那部是《流浪地球》吧，最近刚上映…` |
+   | +「绝对不要编造电影名、时间、地点」 | **还是编**：`记得是《肖申嘉》，挺帅的电影` |
+   | +few-shot（一个正例 + 一个反例） | **不编了**：`["去确认一下上次那部电影的名字","记得没？下次记得一起去看","没印象了，下次我帮你查一下"]` |
+
+   这不只是好不好听：`best_reply` 的题面明确要求惩罚「faking memory or inventing a plan」，
+   编造的候选正是排序器要淘汰的东西。
+
+#### 结构
+
+`ReplyPrompt` 持有 prompt 与解析，**云端 `ReplyClient` 和本地 `LocalReplyClient` 共用**——否则两条路产出的候选形状不一致，判读的排序题就没法比。`ModelStore` 是两份权重共用的「asset → filesDir 解压 / 首次下载」。`JevClient.draftAndRank` 按 provider 分流：本地判读 → 本地起草；显式配了云端 endpoint 的仍走云端。
+
+`parseThree` 有三层兜底（严格 JSON → 正则提取引号内文本 → 按行切），因为实测出现过三条字符串之间**漏逗号**。
+
+#### 验证到什么程度
+
+模拟器（x86_64）、断网、权重从 `/data/local/tmp/` stage：**3 条候选、0 失败**。
+但那次用了 **225 秒**——这个数字**不能外推到真机**（判读那边有对照：模拟器 1.7 tok/s vs 同机原生 420 tok/s，差 250×）。
+WSL 8 线程上同一 prompt 是 **30 token / 5.0 s**。**真机 ARM64 的延迟仍未测**。
+
 ### 权重打包进 APK（v1.4-lyco.3）
 
 `assets/models/jev-style/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf`（529,296,864 B）+ `androidResources { noCompress += "gguf" }`。装完首次判读**不再联网**。

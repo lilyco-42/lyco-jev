@@ -92,7 +92,12 @@ class LocalReplyClient(private val prefs: Prefs) {
         /** Prompt + 200 tokens must fit; the prompt is a few hundred tokens at most. */
         private const val N_CTX = 4096
         private const val MAX_NEW_TOKENS = 200
-        private const val TEMPERATURE = 0.8f
+
+        /**
+         * 0.7 rather than 0.8: the drafting prompt now carries a worked example, and
+         * the extra instruction-following is worth more than the extra variety.
+         */
+        private const val TEMPERATURE = 0.7f
         private const val TOP_P = 0.9f
     }
 }

@@ -14,11 +14,29 @@ import org.json.JSONArray
  */
 internal object ReplyPrompt {
 
-    /** Exactly 3 varied candidate replies in Chinese. */
+    /**
+     * Exactly 3 varied candidate replies in Chinese.
+     *
+     * The "only use what is in the conversation" rule AND the worked example are both
+     * load-bearing. Measured on Qwen3.5-0.8B Q4_K_M, same conversation:
+     *
+     *   - without the rule  -> invented a movie title outright ("那部是《流浪地球》吧")
+     *   - with the rule only -> still invented one ("记得是《肖申嘉》，挺帅的电影")
+     *   - with the example   -> stopped ("没印象了，下次我帮你查一下")
+     *
+     * This matters beyond taste: JevQuestions' best_reply question explicitly
+     * penalises "faking memory or inventing a plan", so an invented candidate is not
+     * just unhelpful, it is the thing the ranker is built to reject.
+     */
     const val SYSTEM =
         "你是中文即时通讯回复助手。只输出一个 JSON 数组，含且仅含 3 条候选回复文本，" +
-            "三条策略要有区别（例如：一条稳妥承接、一条给具体行动或承诺、一条简短低姿态）。" +
-            "每条不超过 40 字，口语、自然、像真人在聊天软件里发消息。不要解释，不要加引号以外的内容，直接输出 JSON 数组。"
+            "三条策略要有区别（一条稳妥承接、一条给具体行动或承诺、一条简短低姿态）。每条不超过 30 字，口语、自然。\n" +
+            "最重要的规则：只能使用对话里已经出现的信息。不记得或不确定的事，就说不记得了、" +
+            "或者反问对方、或者答应去确认——绝对不要编造电影名、时间、地点、人名这类具体事实。\n" +
+            "示例：对话里对方问「上次那个方案你放哪了」，而对话里从没说过放哪了。\n" +
+            "正确输出：[\"我找一下，稍后发你\",\"应该在共享盘里，我确认下路径\",\"我记不太清了，你提醒我一下？\"]\n" +
+            "错误输出（绝不要这样）：[\"在D盘的项目文件夹里\",\"我放共享盘了\",\"早就发你了\"]\n" +
+            "格式必须是合法 JSON 数组，三条之间用逗号分隔。不要解释，直接输出。"
 
     /** The last 10 turns as "我：… / 对方：…" lines. Shared so both routes see the same text. */
     fun convo(snapshot: ChatSnapshot): String = snapshot.messages.takeLast(10).joinToString("\n") {
@@ -58,6 +76,16 @@ internal object ReplyPrompt {
      */
     fun parseThree(rawContent: String): List<String> {
         val content = stripThinking(rawContent)
+        val extracted = extract(content)
+        // A candidate about the example rather than about the conversation is worse
+        // than no candidate, so drop those - but never drop all three.
+        val usable = extracted.filterNot { looksLikeExampleLeak(it) }
+        return pad(if (usable.isEmpty()) extracted else usable)
+    }
+
+    /** Every plausible reading of the model's answer, in descending order of trust. */
+    private fun extract(content: String): List<String> {
+        // 1. Strict JSON: the happy path.
         val start = content.indexOf('[')
         val end = content.lastIndexOf(']')
         if (start >= 0 && end > start) {
@@ -65,18 +93,47 @@ internal object ReplyPrompt {
                 val arr = JSONArray(content.substring(start, end + 1))
                 val out = ArrayList<String>()
                 for (i in 0 until arr.length()) out.add(arr.getString(i).trim())
-                if (out.size >= 3) return out.take(3)
-                while (out.size < 3) out.add(FILLER)
-                return out
+                if (out.isNotEmpty()) return out
             } catch (_: Exception) {
             }
         }
-        val lines = content.split("\n").map { it.trim().trimStart('-', '*', '1', '2', '3', '.', ' ', '"') }
+
+        // 2. The model usually gets the content right and the punctuation wrong -
+        //    measured output put the three strings on separate lines with a missing
+        //    comma. Pull every quoted string out instead of rejecting the whole
+        //    answer for one absent character.
+        val quoted = QUOTED.findAll(content)
+            .map { it.groupValues[1].trim() }
             .filter { it.isNotBlank() }
-        val out = lines.take(3).toMutableList()
+            .toList()
+        if (quoted.isNotEmpty()) return quoted
+
+        // 3. Last resort: treat non-blank lines as candidates.
+        return content.split("\n")
+            .map { it.trim().trimStart('-', '*', '1', '2', '3', '.', ' ', '"') }
+            .filter { it.isNotBlank() }
+    }
+
+    /**
+     * The worked example in [SYSTEM] is what stops the model inventing facts, but a
+     * 0.8B model sometimes lifts the example's own nouns into its answer - measured
+     * on a device: "在共享盘里确认一下，下次提醒我" for a conversation about a film.
+     * Making the example vaguer did not help (the output collapsed into three
+     * near-identical questions), so the example stays concrete and these get dropped.
+     */
+    private fun looksLikeExampleLeak(candidate: String): Boolean =
+        EXAMPLE_NOUNS.any { candidate.contains(it) }
+
+    private val EXAMPLE_NOUNS = listOf("共享盘", "D盘", "项目文件夹", "那个方案")
+
+    private fun pad(items: List<String>): List<String> {
+        val out = items.take(3).toMutableList()
         while (out.size < 3) out.add(FILLER)
         return out
     }
+
+    /** A quoted run without newlines - long enough for a reply, short enough not to swallow prose. */
+    private val QUOTED = Regex("\"([^\"\\n]{1,80})\"")
 
     /**
      * Qwen3.5 emits a `<think>...</think>` reasoning block unless the prompt talks
