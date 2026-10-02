@@ -247,6 +247,30 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --console=plain
 
+      # The APK that gets downloaded must not carry the emulator's ABI. This used
+      # to be a second build buried inside the publish step, which meant the
+      # 41.6 MB of x86_64 natives shipped in every "app-debug" artifact and only
+      # disappeared on the manual-dispatch path that actually reached OSS.
+      #
+      # Safe to reassemble in place: the instrumented runner below invokes
+      # connectedDebugAndroidTest WITHOUT -PdistAbi, and that task re-runs its own
+      # assembleDebug dependency, so the emulator gets a both-ABI build of its own
+      # either way. Nothing downstream reads this file.
+      - name: Rebuild the distribution APK (arm64 only)
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleDebug -PdistAbi --console=plain
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          echo "distribution APK: $(stat -c %s "$APK") bytes"
+          echo "sha256: $(sha256sum "$APK" | cut -d' ' -f1)"
+          # A silent fallback to both ABIs would put 41.6 MB of dead weight back
+          # into every download, and nothing else in this file would notice.
+          if unzip -l "$APK" | grep -q "lib/x86_64/"; then
+            echo "::error::arm64-only build still contains lib/x86_64"
+            exit 1
+          fi
+          echo "confirmed: no lib/x86_64 in the distribution APK"
+
       - name: Upload unit test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -288,9 +312,9 @@ jobs:
             exit 0
           fi
 
-          # arm64 only: the APK the emulator needs is not the APK a phone needs.
-          ./gradlew :app:assembleDebug -PdistAbi --console=plain
-
+          # No rebuild here: the arm64-only APK was assembled and verified two
+          # steps up, before it was uploaded as an artifact. Publishing is now
+          # the same bytes that were downloaded, not a second build of them.
           VER=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           APK=app/build/outputs/apk/debug/app-debug.apk
           SIZE=$(stat -c %s "$APK")
