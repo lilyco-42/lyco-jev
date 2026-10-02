@@ -92,7 +92,7 @@ adb push Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf /data/local/tmp/
 
 ## 分发与首次使用（v1.4 系列）
 
-### 候选回复也在端侧生成（离线闭环的最后一块）
+### 候选回复也在端侧生成（离线闭环的最后一块，v1.4-lyco.5）
 
 判读很早就本地了，但**候选回复**一直由 `ReplyClient.draft()` 走 HTTP 生成——所以选了「本地端侧（离线）」的安装，判读有、**选项没有**，而选项正是 galgame 那件事。断网时那一步抛异常，面板直接报错。
 
@@ -103,7 +103,7 @@ assets/models/reply/Qwen3.5-0.8B-Q4_K_M.gguf
 sha256 bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517
 ```
 
-代价：APK 从 ~594 MiB 涨到 **~1.1 GB**（两个权重都打进 assets）。
+代价：APK 从 ~594 MiB 涨到 **~1.08 GiB**（两个权重都打进 assets）。手机上的总占用见下一节。
 
 #### 两个必须记下来的坑
 
@@ -139,7 +139,16 @@ WSL 8 线程上同一 prompt 是 **30 token / 5.0 s**。**真机 ARM64 的延迟
 
 `assets/models/jev-style/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf`（529,296,864 B）+ `androidResources { noCompress += "gguf" }`。装完首次判读**不再联网**。
 
-代价：`LocalJevModel.ensure()` 是把 asset **解压**到 `filesDir`，所以手机上会有**两份** —— APK 594 MiB + 解压 505 MiB ≈ **1.1 GB**。
+代价：`ModelStore.ensure()` 是把 asset **解压**到 `filesDir`（两份权重共用这套逻辑），所以手机上会有**两份**——而且现在有两个权重：
+
+| 项 | 大小 |
+|---|---|
+| APK（两个权重内嵌） | ~1.08 GiB |
+| 判读权重解压到 `filesDir` | ~505 MiB |
+| 起草权重解压到 `filesDir` | ~508 MiB |
+| **合计** | **~2.1 GiB** |
+
+两次解压都是**按需**的（判读在首次判读时、起草在首次起草时），所以刚装完不会立刻吃满；两条路都跑过之后才是这个数。解压前有空间预检，不足时报「手机存储不足：端侧模型需要约 N MB，当前可用 M MB」。
 
 试过省掉这份重复（直接 mmap APK 里那个未压缩的 asset）：asset 在 zip 内部，`openFd()` 给的 fd 指向**整个 APK** 而不是那个条目，`/proc/self/fd/N` 那招不成立；手动算偏移量可行但复杂，且当时**没有真机可验证**，所以选了稳的解压路线。
 
@@ -166,9 +175,13 @@ get() = sp.getString(K_JUDGE_PROVIDER, PROVIDER_OPENROUTER) ?: PROVIDER_OPENROUT
 失败（1234ms）：手机存储不足：端侧模型需要约 505 MB，当前可用 210 MB
 ```
 
-### 下载目录：两个 manifest 曾经分叉
+### 下载目录：manifest 现在由 CI 从产物生成
 
-站点页面是 `fetch('/downloads/manifest.json', {cache:'no-store'})` 渲染的（文件在 `/var/www/studio/downloads/manifest.json`），OSS 桶里另有一份。**两者一度不一致**：只更新并验证了 OSS 那份，于是"manifest serves lyco-jev: YES"为真、页面却看不到它。现在由 `tools/oss_add_lyco_to_site_manifest.py` 同时写两边，不再分叉。
+站点页面是 `fetch('/downloads/manifest.json', {cache:'no-store'})` 渲染的（文件在 `/var/www/studio/downloads/manifest.json`），OSS 桶里另有一份。**两者一度不一致**：只更新并验证了 OSS 那份，于是「manifest serves lyco-jev: YES」为真、页面却看不到它。
+
+现在 OSS 那份**不再手改**：发布步骤传完 APK 后，用**刚上传那个文件的真实 size/sha256** 回写 manifest —— 手改正是「发布的 hash 和发布的文件对不上」的来源。脚本是 [tools/update-manifest.py](tools/update-manifest.py)：读线上 manifest → 只替换 `lyco-jev` 一条 → 其余 18 条原样带过。对线上真实 manifest 做过**逐字节往返测试**（解析再序列化 == 原文件），所以不会污染别人的条目；找不到、或找到多条 `lyco-jev` 时直接报错退出，不猜。
+
+⚠️ **站点那份还没接上**（CI 拿不到服务器）。`D:\Code\lyco_jev\tools\oss_add_lyco_*.py` 是仓库外的**一次性**脚本，里面的 `version/size/sha256` 还硬编码着 `v1.4-lyco.1` 的 93.7 MB 旧包 —— **现在跑它会把 OSS 那份覆盖成过时数据**。彻底的修法是让站点那份不再独立存在（nginx 加一条 `location = /downloads/manifest.json { return 302 https://dl.lain42.top/downloads/manifest.json; }`），只有一个文件就没有分叉可言。
 
 另一个坑：pingap 里**光加 `[locations.*]` 不够**，名字还必须列进 `[servers.https].locations`（那个列表同时是匹配优先级），否则请求**静默落到 `main` 兜底**、返回 uvicorn 的 404 —— `/downloads/` 就是这么 404 的。稳定入口 `lain42.top/lyco-jev-dl/`（hardlink，不带版本号）与 `dl.lain42.top/downloads/lyco-jev/`（OSS）都是版本无关地址，换版本只重指一次。
 

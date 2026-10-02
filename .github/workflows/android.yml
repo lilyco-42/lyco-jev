@@ -7,15 +7,15 @@
 #   1. an NDK/CMake native build: app/src/main/cpp compiles llama.cpp, which is
 #      pulled at a pinned commit by CMake FetchContent, and
 #      app/build.gradle.kts pins ndkVersion 30.0.15729638 / CMake 3.22.1;
-#   2. model assets that are NOT committed (23 MB encoder + 20 MB detector + the
-#      0.53 GB judge GGUF), so they are fetched here - and skipped when someone
-#      does commit them.
+#   2. model assets that are NOT committed (23 MB encoder + 20 MB detector + two
+#      0.53 GB GGUF weights - a judge and a drafting model), so they are fetched
+#      here - and skipped when someone does commit them.
 #
-# The GGUF is bundled, so the debug APK is ~594 MiB and an install is offline
-# immediately. It is fetched from the lain42 OSS mirror rather than HuggingFace
-# (slow or unreachable from mainland China) and checked against a pinned hash.
-# Note the CI debug build keeps BOTH ABIs because the instrumented tests run on an
-# x86_64 emulator; only the publish step below rebuilds arm64-only.
+# Both GGUFs are bundled, so a distribution debug APK is ~1.1 GiB and an install
+# is offline immediately. They are fetched from the lain42 OSS mirror rather than
+# HuggingFace (slow or unreachable from mainland China) and checked against a
+# pinned hash. Note the CI debug build keeps BOTH ABIs because the instrumented
+# tests run on an x86_64 emulator; only the publish step below rebuilds arm64-only.
 name: Android
 
 on:
@@ -38,6 +38,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # The catalog updater sits on the release path, but the publish step that
+      # calls it only runs on a manual dispatch with OSS secrets set - so without
+      # this, a plain push would never execute a line of it. Offline and instant.
+      - name: Verify the download-catalog updater
+        run: python3 tools/update-manifest.py --self-test
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -257,13 +263,18 @@ jobs:
           if-no-files-found: error
 
       # Publish to the lain42 OSS bucket that dl.lain42.top fronts, so a release
-      # does not have to squeeze ~594 MiB through a home uplink. Manual only: a
+      # does not have to squeeze ~1.1 GiB through a home uplink. Manual only: a
       # push should build and test, not silently add a version to the bucket.
       # No-ops (and stays green) until the two secrets exist.
       #
-      # NOTE: this uploads the bytes. The download catalog at
-      # /var/www/studio/downloads/manifest.json lives on the server, not in OSS,
-      # so updating it is still a separate step - take the sha256 printed below.
+      # The download catalog is regenerated here from the bytes that were just
+      # uploaded, so the published sha256 can never describe a file other than
+      # the one sitting beside it. It used to be hand-edited on the server, which
+      # is exactly how the published hash drifted from the published file.
+      #
+      # The site-side copy at /var/www/studio/downloads/manifest.json is still a
+      # separate file on the radxa and is NOT updated here - see the README's
+      # distribution section for the one-line fix.
       - name: Publish APK to OSS
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
@@ -282,8 +293,10 @@ jobs:
 
           VER=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           APK=app/build/outputs/apk/debug/app-debug.apk
-          echo "publishing $VER ($(stat -c %s "$APK") bytes)"
-          echo "sha256: $(sha256sum "$APK" | cut -d' ' -f1)"
+          SIZE=$(stat -c %s "$APK")
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          echo "publishing $VER ($SIZE bytes)"
+          echo "sha256: $SHA"
 
           curl -sSL --fail -o /tmp/ossutil https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil64
           chmod +x /tmp/ossutil
@@ -291,6 +304,18 @@ jobs:
             -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -L CH
           /tmp/ossutil cp "$APK" "oss://lain42-downloads/downloads/lyco-jev/$VER/lyco-jev-$VER-arm64-debug.apk" -f
           /tmp/ossutil cp "$APK" "oss://lain42-downloads/downloads/lyco-jev/lyco-jev-android-arm64.apk" -f
+
+          # Read the live catalog first, so the ~18 entries this project does not
+          # own are carried through untouched and only lyco-jev is rewritten.
+          curl -sSL --fail --retry 3 -o /tmp/manifest.json \
+            https://dl.lain42.top/downloads/manifest.json
+          python3 tools/update-manifest.py \
+            --manifest /tmp/manifest.json \
+            --version "$VER" --size "$SIZE" --sha256 "$SHA"
+          /tmp/ossutil cp /tmp/manifest.json \
+            oss://lain42-downloads/downloads/manifest.json -f
+
+          echo "done: https://dl.lain42.top/downloads/lyco-jev/lyco-jev-android-arm64.apk"
 
       # ---- on-device (emulator) half of the suite ---------------------------
       # ML Kit OCR, the ONNX detector and the ONNX sentence encoder need nothing
