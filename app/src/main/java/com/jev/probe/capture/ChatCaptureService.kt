@@ -397,11 +397,23 @@ open class ChatCaptureService : AccessibilityService() {
                 if (!isCurrent(token)) return@post
                 overlay?.setContextInfo(ctx?.notes?.size ?: 0, ctx?.history?.size ?: 0)
                 var remaining = 2
+                // Whether the round produced usable results. A failed round must
+                // not post a "模型已就绪" notification: the model may well be ready,
+                // but that is not what went wrong and saying so would mislead.
+                //
+                // Written on a worker thread, read on main inside completed(). The
+                // main.post hop orders the write before the read, and every write
+                // happens before its own post. @Volatile is not an option here -
+                // it only applies to properties, not locals.
+                var roundOk = true
                 fun completed() {
                     remaining--
                     if (remaining == 0) {
                         analyzing = false
                         analysisTasks.clear()
+                        // Both branches land here, so neither a success nor a
+                        // failure can leave a progress notification behind.
+                        client.finishPrepare(ok = roundOk)
                     }
                 }
                 submitAnalysis {
@@ -409,8 +421,10 @@ open class ChatCaptureService : AccessibilityService() {
                     lastJudgment = judgment
                     main.post {
                         if (isCurrent(token)) {
-                            if (judgment.error != null) overlay?.showError(judgment.error)
-                            else overlay?.showJudgment(judgment)
+                            if (judgment.error != null) {
+                                roundOk = false
+                                overlay?.showError(judgment.error)
+                            } else overlay?.showJudgment(judgment)
                             completed()
                         }
                     }
@@ -421,6 +435,7 @@ open class ChatCaptureService : AccessibilityService() {
                         replyError = e.message ?: e.javaClass.simpleName
                         emptyList()
                     }
+                    if (replyError != null) roundOk = false
                     main.post {
                         if (isCurrent(token)) {
                             overlay?.showReplies(ranked, replyError) { text -> fillInput(token, text) }
