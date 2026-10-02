@@ -13,6 +13,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.jev.probe.capture.ocr.MlKitOcr
 import com.jev.probe.capture.ocr.OcrLine
 import com.jev.probe.capture.ocr.ScreenCapture
+import com.jev.probe.core.Analysis
 import com.jev.probe.core.BubbleRect
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Msg
@@ -417,7 +418,18 @@ open class ChatCaptureService : AccessibilityService() {
                     }
                 }
                 submitAnalysis {
-                    val judgment = client.judge(snapshot, rel, ctx)
+                    // Wrapped because judge() can throw rather than return an error:
+                    // "手机存储不足" comes out of the weight unpack, and an exception
+                    // here would skip completed() entirely - leaving the progress
+                    // notification stuck in the shade forever, on the one path where
+                    // the user most needs to be told what happened.
+                    val judgment = try {
+                        client.judge(snapshot, rel, ctx)
+                    } catch (e: Exception) {
+                        roundOk = false
+                        Analysis(null, null, null, null, null, null, null, emptyList(),
+                            0L, error = e.message ?: e.javaClass.simpleName)
+                    }
                     lastJudgment = judgment
                     main.post {
                         if (isCurrent(token)) {
