@@ -24,6 +24,17 @@ class LocalJudgeClient(private val context: Context) {
     /** readout_config.json -> temperatures.global (used when no category is given). */
     private val temperature = 0.880f
 
+    /**
+     * Where the one-off weight preparation reports progress.
+     *
+     * The weight ships inside the APK, so this is an unpack, not a download - but
+     * it is still 505 MB of I/O on first use, and even a warm start spends time in
+     * nativeLoad. Without a live readout the panel sat on a static "分析中…" through
+     * both, which is indistinguishable from a hang. Set by the caller before
+     * [decide]; invoked from the judge worker thread.
+     */
+    @Volatile var onPrepare: ((done: Long, total: Long, extracting: Boolean) -> Unit)? = null
+
     @Volatile private var handle: Long = 0L
     private val lock = Any()
 
@@ -33,16 +44,24 @@ class LocalJudgeClient(private val context: Context) {
         synchronized(lock) {
             if (handle != 0L) return handle
             LocalJevNative.ensureLoaded()?.let { throw IllegalStateException(it) }
-            // The 0.53 GB of weights are not in the APK, so the very first judgment
-            // fetches them. Without this the UI just looks frozen for a minute.
+            // The 0.53 GB is bundled in the APK and gets unpacked to filesDir on
+            // first use. It used to say "正在下载" here, which was simply untrue:
+            // no network is involved, and a user with no connection was told to
+            // wait for a download that would never happen.
             val firstRun = !LocalJevModel.isPresent(context)
-            if (firstRun) {
-                announce("首次使用：正在下载端侧判读模型（约 530 MB，仅此一次），请稍候…")
-            }
-            val model = LocalJevModel.ensure(context)
+            val model = LocalJevModel.ensure(
+                context,
+                onStage = { stage ->
+                    onPrepare?.invoke(0L, -1L, stage == ModelStore.Stage.EXTRACTING)
+                },
+                onProgress = { done, total -> onPrepare?.invoke(done, total, true) },
+            )
             if (firstRun) {
                 announce("端侧判读模型已就绪，之后判读完全离线。")
             }
+            // total = -2: unpacking is done, mmap + warm-up is not. Otherwise the
+            // panel shows a finished progress bar and then sits there again.
+            onPrepare?.invoke(0L, -2L, true)
             val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
             val h = LocalJevNative.nativeLoad(model.absolutePath, N_CTX, threads)
             if (h == 0L) throw IllegalStateException("本地模型加载失败：" + model.name)

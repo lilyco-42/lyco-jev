@@ -188,18 +188,23 @@ class SettingsActivity : AppCompatActivity() {
                 try {
                     // The first on-device run has to materialise 0.5 GB of weights.
                     // With no feedback that is indistinguishable from a hang, so the
-                    // label tracks it byte by byte.
+                    // label tracks it byte by byte. The weight is bundled, so this
+                    // is an unpack and the wording says 解压, not 下载.
                     if (provider == Prefs.PROVIDER_LOCAL && !LocalJevModel.isPresent(probe.appContext)) {
                         main.post { judgeResult.text = "准备端侧模型…" }
-                        LocalJevModel.ensure(probe.appContext) { done, total ->
-                            val mb = done / (1024 * 1024)
-                            val text = if (total > 0) {
-                                "准备端侧模型 ${mb}/${total / (1024 * 1024)} MB（${done * 100 / total}%）"
-                            } else {
-                                "准备端侧模型 ${mb} MB…"
-                            }
-                            main.post { judgeResult.text = text }
-                        }
+                        LocalJevModel.ensure(
+                            probe.appContext,
+                            onProgress = { done, total ->
+                                val mb = done / (1024 * 1024)
+                                val text = if (total > 0) {
+                                    "正在解压端侧模型 ${mb}/${total / (1024 * 1024)} MB" +
+                                        "（${done * 100 / total}%）"
+                                } else {
+                                    "正在解压端侧模型 ${mb} MB…"
+                                }
+                                main.post { judgeResult.text = text }
+                            },
+                        )
                     }
                     val demo = ChatSnapshot("连通测试", listOf(
                         Msg("other", "在吗？"), Msg("me", "在")))

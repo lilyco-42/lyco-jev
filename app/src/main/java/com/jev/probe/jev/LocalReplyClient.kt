@@ -22,6 +22,13 @@ class LocalReplyClient(private val prefs: Prefs) {
 
     private val context: Context get() = prefs.appContext
 
+    /**
+     * Same contract as [LocalJudgeClient.onPrepare]: progress for the one-off
+     * unpack of the bundled weight, then a marker that the mmap is underway.
+     * Invoked from the drafting worker thread.
+     */
+    @Volatile var onPrepare: ((done: Long, total: Long, extracting: Boolean) -> Unit)? = null
+
     @Volatile private var handle: Long = 0L
     private val lock = Any()
 
@@ -32,15 +39,21 @@ class LocalReplyClient(private val prefs: Prefs) {
             if (handle != 0L) return handle
             LocalJevNative.ensureLoaded()?.let { throw IllegalStateException(it) }
             // Same first-run courtesy as the judge: half a gigabyte with no
-            // feedback is indistinguishable from a hang.
+            // feedback is indistinguishable from a hang. Also says 解压 rather
+            // than 下载, because the weight is inside the APK - there is nothing
+            // to download and an offline phone would wait forever for one.
             val firstRun = !LocalReplyModel.isPresent(context)
-            if (firstRun) {
-                announce("首次使用：正在准备本地起草模型（约 508 MB，仅此一次），请稍候…")
-            }
-            val model = LocalReplyModel.ensure(context)
+            val model = LocalReplyModel.ensure(
+                context,
+                onStage = { stage ->
+                    onPrepare?.invoke(0L, -1L, stage == ModelStore.Stage.EXTRACTING)
+                },
+                onProgress = { done, total -> onPrepare?.invoke(done, total, true) },
+            )
             if (firstRun) {
                 announce("本地起草模型已就绪，候选回复此后完全离线。")
             }
+            onPrepare?.invoke(0L, -2L, true)
             val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
             val h = LocalJevNative.nativeLoad(model.absolutePath, N_CTX, threads)
             if (h == 0L) throw IllegalStateException("本地起草模型加载失败：" + model.name)

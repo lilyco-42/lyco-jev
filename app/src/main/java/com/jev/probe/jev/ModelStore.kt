@@ -29,11 +29,25 @@ class ModelStore(
 
     @Volatile private var cached: File? = null
 
+    /** Where the bytes are coming from, so the caller can say something true. */
+    enum class Stage {
+        /** Unpacking the copy that shipped inside the APK - no network involved. */
+        EXTRACTING,
+
+        /** No bundled copy; pulling it down. */
+        DOWNLOADING,
+    }
+
     /**
+     * @param onStage called once, before the first byte moves.
      * @param onProgress called during the one-off copy/download, because half a
      *   gigabyte with no feedback is indistinguishable from a hang.
      */
-    fun ensure(ctx: Context, onProgress: ProgressListener? = null): File {
+    fun ensure(
+        ctx: Context,
+        onStage: ((Stage) -> Unit)? = null,
+        onProgress: ProgressListener? = null,
+    ): File {
         cached?.let { if (it.isFile) return it }
         synchronized(this) {
             cached?.let { if (it.isFile) return it }
@@ -61,11 +75,13 @@ class ModelStore(
                     )
                 }
                 Log.i(TAG, "extracting bundled GGUF -> " + dst.absolutePath + " (" + total + " bytes)")
+                onStage?.invoke(Stage.EXTRACTING)
                 asset.use { input ->
                     FileOutputStream(dst).use { output -> copyWithProgress(input, output, total, onProgress) }
                 }
             } else {
                 Log.i(TAG, "no bundled $fileName; downloading from " + downloadUrls.first())
+                onStage?.invoke(Stage.DOWNLOADING)
                 download(dst, onProgress)
             }
             cached = dst

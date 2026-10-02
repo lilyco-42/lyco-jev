@@ -42,8 +42,12 @@ object LocalReplyModel {
 
     private val store = ModelStore(ASSET_PATH, FILE_NAME, DOWNLOAD_URLS, MIN_BYTES)
 
-    /** @param onProgress see [ModelStore.ensure]. */
-    fun ensure(ctx: Context, onProgress: ProgressListener? = null): File = store.ensure(ctx, onProgress)
+    /** @param onStage / @param onProgress see [ModelStore.ensure]. */
+    fun ensure(
+        ctx: Context,
+        onStage: ((ModelStore.Stage) -> Unit)? = null,
+        onProgress: ProgressListener? = null,
+    ): File = store.ensure(ctx, onStage, onProgress)
 
     fun isPresent(ctx: Context): Boolean = store.isPresent(ctx)
 }

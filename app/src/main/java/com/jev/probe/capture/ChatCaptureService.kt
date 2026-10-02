@@ -376,6 +376,16 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.showLoading()
         overlay?.setNote(snapshot.note)
         val client = JevClient(prefs)
+        // Fires on a worker thread while a bundled weight is unpacked (and again
+        // when it is mapped), so it has to hop to the main thread to touch the
+        // panel. Without this the panel showed a static "分析中…" across 1 GB of
+        // first-run I/O, and the notice said "下载" for something that is already
+        // inside the APK.
+        client.onPrepare = { done, total, extracting ->
+            main.post {
+                if (isCurrent(token)) overlay?.showPrepare(extracting, done, total)
+            }
+        }
         val rel = prefs.relationship
         submitAnalysis {
             val ctx = try {
