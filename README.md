@@ -8,7 +8,7 @@
 |---|---|---|
 | 1 | 模型尽量小、手机免费跑 | **已在设备上跑通**（x86_64 模拟器，2 个 instrumented 测试全过）：llama.cpp 加载真 GGUF → 渲染 → 解码 → 读 `->` 槽位 yes/no logits → 校准 → answers。过程中修掉一个真 bug：`llama_get_logits_ith` 收的是**batch token index**，不是输出序号，传错会在 `llama_context::get_logits_ith` 里 abort。**端侧判读层已落地**：`app/src/main/cpp/jev_jni.cpp`（llama.cpp 打分器）+ `LocalJevRenderer.kt`（`macjev-render-v1` 渲染）+ `LocalJudgeClient.kt`（读数 + 校准 + 复用云端同一套 `answers` 解析）。权重 Jev-Style-0.8B Q4_K_M = 0.53 GB，Apache-2.0。PC 上已用真权重验证判读正确性。 |
 | 2 | OCR + YOLO | `capture/vision/YoloDecode.kt`（**纯逻辑、无 Android 类型、单测覆盖**）+ `YoloDetector.kt`（ONNX Runtime 与坐标映射）+ `VisionFusion.kt`（把 YOLO 框与 ML Kit OCR 行配对成一句可判读的描述）。解码支持 YOLOv8 `[1,4+nc,A]` 与 YOLOX `[1,A,5+nc]` 两种布局。资源由 `tools/fetch_vision_assets.ps1` 放入 `app/src/main/assets/models/yolo/`。 |
-| 3 | 无障碍 + 悬浮窗 | 直接复用上游读屏 / 悬浮窗 / 适配器；新增 `PROVIDER_LOCAL` 与设置页「本地端侧（离线）」入口。自动回复**已接线**：`AutoReplyPolicy`（6 单测）+ `ChatAppAdapter.sendNode`（默认 null = 永不发送）+ `ChatCaptureService.sendNow`。**默认关闭**（`prefs.autoSend = false`），失败即不发。 |
+| 3 | 无障碍 + 悬浮窗 | 直接复用上游读屏 / 悬浮窗 / 适配器；新增 `PROVIDER_LOCAL` 与设置页「本地端侧（离线）」入口。自动回复**已接线**：`AutoReplyPolicy`（6 单测）+ `ChatAppAdapter.sendNode`（默认 null = 永不发送）+ `ChatCaptureService.sendNow`。**默认关闭**（`prefs.autoSend = false`），失败即不发。整条链已在**设备上端到端验证**（闸门 → 填字 → 按 viewId 找发送键 → 点击 → 界面观察到已发）。 |
 | 4 | 长期记忆 + 滑动窗口 | **已实现**：`core/kb/EmbeddingIndex.kt`（bge-small-zh-v1.5 int8, 22.9 MB）+ `MemoryRetriever.kt`（语义相似度 + 半衰期滑窗），`ContextBuilder` 在 `prefs.semanticMemory` 打开且资源存在时改用检索，否则**逐字回退**到上游子串匹配。
 
 ## 端侧判读是怎么接进去的
@@ -46,9 +46,92 @@ curl.exe -sSL -o app\src\main\assets\models\jev-style\Jev-Style-0.8B-Decision-v3
 .\gradlew.bat :app:assembleDebug
 ```
 
+## CI（GitHub Actions）
+
+仓库：**https://github.com/lilyco-42/lyco-jev**（public，走免费 Actions 额度）。
+
+[.github/workflows/android.yml](.github/workflows/android.yml) —— 骨架抄自 [android/nowinandroid 的 Build.yaml](https://github.com/android/nowinandroid/blob/main/.github/workflows/Build.yaml)（`checkout@v4 → setup-java@v5 → gradle/actions/setup-gradle@v4 → upload-artifact@v4`），补上这个项目特有的两步：装 `ndk;30.0.15729638` + `cmake;3.22.1`（CMake FetchContent 会在 CI 上现场编 llama.cpp），以及拉 ~43 MB 模型资源（已在仓库里就跳过）。
+
+当前**整条流水线绿，8m6s**（[run 36984257408](https://github.com/lilyco-42/lyco-jev/actions/runs/36984257408)，commit `4871be2`）：
+
+```
+Task :app:testDebugUnitTest          BUILD SUCCESSFUL in 50s
+Task :app:buildCMakeDebug[arm64-v8a]
+Task :app:buildCMakeDebug[x86_64]
+Task :app:assembleDebug              BUILD SUCCESSFUL in 1m 30s
+Starting 10 tests on emulator-5554 - 16
+Finished 10 tests on emulator-5554 - 16
+Task :app:connectedDebugAndroidTest  BUILD SUCCESSFUL in 1m 38s
+artifacts: app-debug 561 MiB · unit-test-reports · instrumented-test-reports
+```
+
+**真机（模拟器）那半边也在 CI 里跑**：`reactivecircus/android-emulator-runner@v2`（KVM 开启与用法抄自该 action README 的示例），API 36 / google_apis / x86_64，跑 **10 个 instrumented 测试**（自动发送 2 + 冒烟 1 + 视觉 1 + 记忆 2 + OCR 3）。
+
+`app-debug` 产物现在 **561 MiB**（zip）——因为 Jev-Style 权重已经打进 assets，见下面「权重打包进 APK」。CI 的 debug 包保留 arm64-v8a + x86_64 两个 ABI（模拟器要跑 x86_64）；分发给手机用的 arm64-only 包由 `-PdistAbi` 单独构建（623,029,300 B）。
+
+`LocalJudgeInstrumentedTest` **故意不在 CI 里**：它需要 0.53 GB 的 GGUF，那个不进 git。本地这样跑：
+
+```powershell
+adb push Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf /data/local/tmp/
+.\gradlew.bat :app:connectedDebugAndroidTest `
+  "-Pandroid.testInstrumentationRunnerArguments.class=com.jev.probe.jev.LocalJudgeInstrumentedTest"
+```
+
+**CI 抓到 4 个跨平台问题**，本地 Windows 一个都看不出来：
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `Set up Android SDK` 失败 | `android-actions/setup-android@v3` 驱动 runner 自带 sdkmanager 时退出 1（且 `yes \| sdkmanager --licenses` 在 pipefail 下会因 SIGPIPE 假失败） | 删掉该 action，直接驱动预装 SDK |
+| 2 | `exit code 126` | 从 Windows push 的 `gradlew` 记录为 100644，Linux 上不可执行 | `git update-index --chmod=+x gradlew`，并在 workflow 里 `chmod +x` 兜底 |
+| 3 | `Cannot convert URL 'H:/android/keys/...' to a file` | Gradle 的 `file()` 在非 Windows 上把 `H:` 当 **URL scheme**，在建 keystore 就抛，`exists()` 根本轮不到 | 改用 `java.io.File` |
+| 4 | `Unresolved reference: io` | Kotlin DSL 里 `java` 解析成 **Gradle 的 Java 扩展**，遮蔽了 `java` 包 | 顶部 `import java.io.File` |
+
+第 3、4 条是上游遗传的 Windows-only 假设，开源给非 Windows 用户本来就是坏的。
+
+仓库体积控制在 **2.4 MB / 118 文件**：`app/.cxx`（823 MB）、`app/build`（719 MB）、`app/src/main/assets/models`（43 MB 编码器/检测器）、以及 0.53 GB 的判读权重全部 gitignore —— 权重**不进 git**，由 CI 现拉、校验 sha256 后打进 APK。
+
+## 分发与首次使用（v1.4 系列）
+
+### 权重打包进 APK（v1.4-lyco.3）
+
+`assets/models/jev-style/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf`（529,296,864 B）+ `androidResources { noCompress += "gguf" }`。装完首次判读**不再联网**。
+
+代价：`LocalJevModel.ensure()` 是把 asset **解压**到 `filesDir`，所以手机上会有**两份** —— APK 594 MiB + 解压 505 MiB ≈ **1.1 GB**。
+
+试过省掉这份重复（直接 mmap APK 里那个未压缩的 asset）：asset 在 zip 内部，`openFd()` 给的 fd 指向**整个 APK** 而不是那个条目，`/proc/self/fd/N` 那招不成立；手动算偏移量可行但复杂，且当时**没有真机可验证**，所以选了稳的解压路线。
+
+### 默认走端侧（v1.4-lyco.2）
+
+```kotlin
+// Prefs.kt  改之前 —— 新装默认走云端，端侧藏在设置第 7 项
+get() = sp.getString(K_JUDGE_PROVIDER, PROVIDER_OPENROUTER) ?: PROVIDER_OPENROUTER
+```
+
+这个项目的前提就是端侧、离线、免费，默认却是 OpenRouter —— 是做错了。改成 `PROVIDER_LOCAL`；已手动选过的用户不受影响（存储值优先）。同时给首次准备加了提示（原来静默拉/解 0.53 GB，界面看起来就是卡住一分钟）。
+
+### 首次准备不能静默（v1.4-lyco.4）
+
+用户报「点测试，一点效果都看不到，下载进度也没有」—— 两个都是真 bug：
+
+1. **测试按钮的 worker 没有 try/catch**。任何异常（native 加载失败、磁盘写满、解压出错）都会让线程直接死掉，`main.post` 永不执行，标签**永久停在「测试中…」** —— 是「什么都没发生」，不是「报了错」。
+2. **准备那 505 MB 完全没有进度上报**。半 GB 复制而界面不动，和卡死观感上一样。
+
+修法：`ensure(ctx, onProgress)` 每约 8 MB 报一次（解压/下载两条路都报）、worker 全程 try/catch（失败必给耗时与原因）、**解压前空间预检**。
+
+```
+准备端侧模型 123/505 MB（24%）
+失败（1234ms）：手机存储不足：端侧模型需要约 505 MB，当前可用 210 MB
+```
+
+### 下载目录：两个 manifest 曾经分叉
+
+站点页面是 `fetch('/downloads/manifest.json', {cache:'no-store'})` 渲染的（文件在 `/var/www/studio/downloads/manifest.json`），OSS 桶里另有一份。**两者一度不一致**：只更新并验证了 OSS 那份，于是"manifest serves lyco-jev: YES"为真、页面却看不到它。现在由 `tools/oss_add_lyco_to_site_manifest.py` 同时写两边，不再分叉。
+
+另一个坑：pingap 里**光加 `[locations.*]` 不够**，名字还必须列进 `[servers.https].locations`（那个列表同时是匹配优先级），否则请求**静默落到 `main` 兜底**、返回 uvicorn 的 404 —— `/downloads/` 就是这么 404 的。稳定入口 `lain42.top/lyco-jev-dl/`（hardlink，不带版本号）与 `dl.lain42.top/downloads/lyco-jev/`（OSS）都是版本无关地址，换版本只重指一次。
+
 ## 刻意没做
 
-- **默认自动发送**：上游硬约束是「只填入、绝不发送」，本 fork 保留该默认（`autoSend = false`）。开启后每一轮仍要过 `AutoReplyPolicy`：总开关、会话白名单、危险等级上限（默认 3）、每小时最多 3 条；且**只有 adapter 显式交出 `sendNode` 的 App 才会被点发送**（当前仅 QQ，`id/send_btn`），其余一律退回「只填入」。没有判断结果时**失败即不发**。真机验证仍待补。
+- **默认自动发送**：上游硬约束是「只填入、绝不发送」，本 fork 保留该默认（`autoSend = false`）。开启后每一轮仍要过 `AutoReplyPolicy`：总开关、会话白名单、危险等级上限（默认 3）、每小时最多 3 条；且**只有 adapter 显式交出 `sendNode` 的 App 才会被点发送**（当前仅 QQ，`id/send_btn`），其余一律退回「只填入」。没有判断结果时**失败即不发**。整条链（闸门 → `ACTION_SET_TEXT` → 按 viewId 找发送键 → `ACTION_CLICK` → 界面观察到 `sent:…`）已在**设备上端到端验证**（x86_64 模拟器，CI 每次 push 都跑，见 [AutoSendClickInstrumentedTest](lyco-jev/app/src/androidTest/java/com/jev/probe/AutoSendClickInstrumentedTest.kt)）；**真机 ARM64 仍未实测**。
 
 ### 把纯逻辑抽出来测，顺带抓到第二个真 bug（Round 8）
 
